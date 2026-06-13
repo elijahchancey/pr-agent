@@ -234,6 +234,11 @@ ignore_bot_pr = true
 # auto_improve = true   # set as env var in .github/workflows/pr-agent.yaml
 # pr_actions = ['opened', 'reopened', 'ready_for_review', 'review_requested']
 
+[buildkite_config]
+# auto_review = true    # set as env var (BUILDKITE_CONFIG__AUTO_REVIEW) in the pipeline
+# auto_describe = true  # set as env var (BUILDKITE_CONFIG__AUTO_DESCRIBE) in the pipeline
+# auto_improve = true   # set as env var (BUILDKITE_CONFIG__AUTO_IMPROVE) in the pipeline
+
 [github_app]
 # these toggles allows running the github app from custom deployments
 bot_user = "github-actions[bot]"

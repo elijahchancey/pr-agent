@@ -47,3 +47,12 @@ Configure PR-Agent with Azure DevOps as:
 - Local Azure DevOps webhook
 
 [View Azure DevOps Integration Guide →](./azure.md)
+
+## 🪁 Buildkite Integration
+
+Run PR-Agent from Buildkite as:
+
+- Buildkite pipeline step
+- Buildkite plugin
+
+[View Buildkite Integration Guide →](./buildkite.md)

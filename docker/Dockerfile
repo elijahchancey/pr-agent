@@ -43,6 +43,10 @@ EXPOSE 9000
 CMD ["python", "pr_agent/mosaico/server.py"]
 
 
+FROM base AS buildkite
+ADD pr_agent pr_agent
+CMD ["python", "pr_agent/servers/buildkite_runner.py"]
+
 FROM base AS test
 ADD requirements-dev.txt .
 RUN pip install --no-cache-dir -r requirements-dev.txt && rm requirements-dev.txt

@@ -139,6 +139,10 @@ jobs:
             target: ''
             suffix: github_action
             rolling: github_action
+          - dockerfile: docker/Dockerfile
+            target: buildkite
+            suffix: buildkite
+            rolling: buildkite
           - dockerfile: docker/Dockerfile.lambda
             target: github_lambda
             suffix: github_lambda

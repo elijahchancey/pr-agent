@@ -47,9 +47,9 @@ On providers that support GitHub-Flavored Markdown this appends a collapsible se
 - Tokens: 12,340 in / 1,205 out / 13,545 total
 - Time cost: 8.2s
 - AI calls: 1
-- Estimated API cost: $0.0842 USD
-  - anthropic/claude-opus-5: $0.0710 USD
-  - anthropic/claude-sonnet-5: $0.0132 USD
+- Estimated API cost: $0.08 USD
+  - anthropic/claude-opus-5: $0.07 USD
+  - anthropic/claude-sonnet-5: $0.01 USD
 ```
 
 `Model` shows the model that produced the answer, marked `(fallback)` when the primary model failed and a fallback took

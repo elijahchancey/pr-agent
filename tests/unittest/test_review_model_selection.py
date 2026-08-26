@@ -73,6 +73,25 @@ def test_review_without_selectors_does_not_read_override_configuration():
     assert remaining_args == ["-i", "legacy-arg"]
 
 
+@pytest.mark.parametrize("settings", [_Settings(enabled=False), _Settings()])
+def test_plus_tokens_that_are_not_selectors_keep_historical_meaning(settings):
+    args = ["please", "check", "the", "C++", "parts", "a+b", "foo+bar"]
+
+    selections, remaining_args = parse_review_model_selections(args, settings)
+
+    assert selections == ()
+    assert remaining_args == args
+
+
+def test_disabled_feature_ignores_effort_typos_instead_of_failing_the_review():
+    selections, remaining_args = parse_review_model_selections(
+        ["opus+extreme"], _Settings(enabled=False)
+    )
+
+    assert selections == ()
+    assert remaining_args == ["opus+extreme"]
+
+
 def test_review_help_documents_ordered_alias_effort_selectors():
     assert "/review [alias+effort ...]" in HelpMessage.get_general_commands_text()
     review_help = HelpMessage.get_review_usage_guide()
@@ -197,7 +216,7 @@ def test_selector_fallback_uses_its_own_effort_and_does_not_leak():
         restore_settings(snapshot)
 
 
-def test_litellm_applies_command_effort_to_an_allowlisted_model_outside_builtin_lists(monkeypatch):
+def _make_bare_handler(monkeypatch, captured):
     handler = LiteLLMAIHandler.__new__(LiteLLMAIHandler)
     handler.azure = False
     handler.api_base = None
@@ -210,7 +229,6 @@ def test_litellm_applies_command_effort_to_an_allowlisted_model_outside_builtin_
     handler._aws_imds_fell_back = False
     handler._aws_static_creds = None
     handler._aws_bedrock_lock = None
-    captured = {}
 
     async def fake_get_completion(**kwargs):
         captured.update(kwargs)
@@ -222,6 +240,12 @@ def test_litellm_applies_command_effort_to_an_allowlisted_model_outside_builtin_
         return "response", "stop", response
 
     monkeypatch.setattr(handler, "_get_completion", fake_get_completion)
+    return handler
+
+
+def test_litellm_applies_command_effort_to_an_allowlisted_model_outside_builtin_lists(monkeypatch):
+    captured = {}
+    handler = _make_bare_handler(monkeypatch, captured)
     selection = ReviewModelSelection("opus", "anthropic/claude-opus-5", "xhigh")
 
     with use_review_model_selection(selection):
@@ -232,6 +256,36 @@ def test_litellm_applies_command_effort_to_an_allowlisted_model_outside_builtin_
     assert (response, finish_reason) == ("response", "stop")
     assert captured["model"] == "anthropic/claude-opus-5"
     assert captured["reasoning_effort"] == "xhigh"
+    # Without this, litellm rejects the effort client-side for models missing
+    # from its capability map (drop_params defaults to false).
+    assert captured["allowed_openai_params"] == ["reasoning_effort"]
+    # Anthropic rejects a pinned temperature while extended thinking is enabled.
+    assert "temperature" not in captured
+
+
+def test_litellm_command_effort_none_keeps_temperature_for_claude(monkeypatch):
+    captured = {}
+    handler = _make_bare_handler(monkeypatch, captured)
+    selection = ReviewModelSelection("opus", "anthropic/claude-opus-5", "none")
+
+    with use_review_model_selection(selection):
+        asyncio.run(handler.chat_completion(model=selection.model, system="system", user="user"))
+
+    assert captured["reasoning_effort"] == "none"
+    assert captured["temperature"] == 0.2
+
+
+def test_litellm_command_effort_keeps_temperature_for_non_anthropic_models(monkeypatch):
+    captured = {}
+    handler = _make_bare_handler(monkeypatch, captured)
+    selection = ReviewModelSelection("terra", "some-provider/new-model", "high")
+
+    with use_review_model_selection(selection):
+        asyncio.run(handler.chat_completion(model=selection.model, system="system", user="user"))
+
+    assert captured["reasoning_effort"] == "high"
+    assert captured["allowed_openai_params"] == ["reasoning_effort"]
+    assert captured["temperature"] == 0.2
 
 
 @pytest.mark.parametrize(
@@ -271,6 +325,35 @@ async def test_review_without_selectors_uses_the_existing_constructor_path(monke
 
         assert handled is True
         assert reviewer_calls == [("https://example/pr/1", "fake-ai", ["-i"])]
+    finally:
+        _restore_sections(snapshot)
+
+
+@pytest.mark.asyncio
+async def test_plain_review_comment_mentioning_cpp_runs_with_feature_disabled(monkeypatch):
+    snapshot = _snapshot_sections("CONFIG")
+    reviewer_calls = []
+
+    class _ExistingReviewer:
+        def __init__(self, pr_url, ai_handler, args):
+            reviewer_calls.append((pr_url, ai_handler, args))
+
+        async def run(self):
+            pass
+
+    try:
+        _replace_section_values("CONFIG", RESPONSE_LANGUAGE="en-us")
+        monkeypatch.setattr(pr_agent_module, "apply_repo_settings", lambda _pr_url: None)
+        monkeypatch.setitem(pr_agent_module.command2class, "review", _ExistingReviewer)
+
+        handled = await pr_agent_module.PRAgent(ai_handler="fake-ai")._handle_request(
+            "https://example/pr/1", "/review please check the C++ parts"
+        )
+
+        assert handled is True
+        assert reviewer_calls == [
+            ("https://example/pr/1", "fake-ai", ["please", "check", "the", "C++", "parts"])
+        ]
     finally:
         _restore_sections(snapshot)
 

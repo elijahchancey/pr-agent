@@ -61,6 +61,10 @@ rejected to prevent unexpected cost escalation. Supported efforts are `none`, `m
 `xhigh`, and `max`. A command can include at most four selectors, and exact duplicate selectors are rejected so a
 caller cannot amplify provider retries during an outage.
 
+A token is treated as a selector only when its effort part is a known effort value, or when its alias part matches a
+configured alias while the feature is enabled. Other arguments that merely contain `+` — for example `C++` in free-text
+review instructions — keep their historical meaning and never fail the review.
+
 ### Automatic triggering
 
 To run the `review` automatically when a PR is opened, define in a [configuration file](../usage-guide/configuration_options.md#local-configuration-file):

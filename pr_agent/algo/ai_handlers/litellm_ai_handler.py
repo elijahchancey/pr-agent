@@ -718,9 +718,23 @@ class LiteLLMAIHandler(BaseAiHandler):
                 # (including newly released provider models).
                 if command_effort is not None and "reasoning_effort" not in kwargs:
                     kwargs["reasoning_effort"] = command_effort
+                    # Models outside litellm's capability map (the newly released
+                    # models this branch exists for) otherwise fail client-side with
+                    # UnsupportedParamsError, since drop_params defaults to false.
+                    kwargs["allowed_openai_params"] = ["reasoning_effort"]
                     get_logger().info(
                         f"Adding command reasoning_effort with value {command_effort} to model {model}."
                     )
+
+                # litellm maps reasoning_effort to Anthropic extended thinking
+                # (except "none", which disables it), and the API rejects any
+                # pinned temperature while thinking is enabled — only the default
+                # of 1 is allowed. Command efforts bypass
+                # _configure_claude_extended_thinking, so reconcile here the same
+                # way it does for config-driven thinking.
+                if (command_effort is not None and command_effort != ReasoningEffort.NONE.value
+                        and ("claude" in model or model in self.claude_extended_thinking_models)):
+                    kwargs.pop("temperature", None)
 
                 # https://docs.anthropic.com/en/docs/build-with-claude/extended-thinking
                 if (command_effort is None and model in self.claude_extended_thinking_models and

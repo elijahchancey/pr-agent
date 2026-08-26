@@ -255,15 +255,10 @@ class PRAgent:
                 if notify:
                     notify()
 
-                if action == "review" and model_selections:
-                    await command2class[action](
-                        pr_url,
-                        ai_handler=self.ai_handler,
-                        args=args,
-                        model_selections=model_selections,
-                    ).run()
-                else:
-                    await command2class[action](pr_url, ai_handler=self.ai_handler, args=args).run()
+                # Keep the historical constructor call unless selectors were given,
+                # so tool classes that predate model_selections stay compatible.
+                review_kwargs = {"model_selections": model_selections} if model_selections else {}
+                await command2class[action](pr_url, ai_handler=self.ai_handler, args=args, **review_kwargs).run()
             else:
                 return False
             return True

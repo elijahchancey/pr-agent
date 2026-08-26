@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from pr_agent.algo.utils import ReasoningEffort
 
 _ALIAS_RE = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
+_EFFORT_VALUES = frozenset(effort.value for effort in ReasoningEffort)
 # Each selector adds a provider attempt on the failure path, so keep caller-controlled
 # chains small even when every model identity is operator-allowlisted.
 MAX_MODEL_SELECTIONS = 4
@@ -77,6 +78,23 @@ def _get_aliases(settings) -> dict[str, str]:
     return aliases
 
 
+def _split_selector(arg: str) -> tuple[str, str]:
+    raw_alias, raw_effort = arg.split("+", 1)
+    return raw_alias.strip().lower(), raw_effort.strip().lower()
+
+
+def _is_selector_shaped(arg: str) -> bool:
+    """True only for ``alias+effort`` tokens whose effort is a known value.
+
+    Ordinary arguments that merely contain ``+`` (``C++``, ``a+b``, leftover
+    ``--foo+bar`` flags) are not selectors and keep their historical meaning.
+    """
+    if arg.count("+") != 1:
+        return False
+    _, effort = _split_selector(arg)
+    return effort in _EFFORT_VALUES
+
+
 def parse_review_model_selections(
     args: Sequence[str], settings
 ) -> tuple[tuple[ReviewModelSelection, ...], list[str]]:
@@ -84,19 +102,26 @@ def parse_review_model_selections(
 
     Tokens without ``+`` retain their historical meaning. This keeps ``/review`` and
     existing flags byte-for-byte compatible when no selector syntax is present.
+    A token containing ``+`` is treated as a selector only when its effort part is a
+    known reasoning effort, or (with the feature enabled) when its alias part is a
+    configured alias — so prose like ``C++`` never fails a review, while a typo such
+    as ``opus+extreme`` still gets an actionable error.
     """
-    selector_tokens = [arg for arg in args if "+" in arg]
-    if not selector_tokens:
+    if not any("+" in arg for arg in args):
         return (), list(args)
 
+    selector_tokens = [arg for arg in args if _is_selector_shaped(arg)]
     if not _is_enabled(settings.get("PR_REVIEWER.ENABLE_COMMAND_MODEL_OVERRIDES", False)):
-        raise ReviewModelSelectionError(
-            "Per-command model overrides are disabled. Ask an operator to enable "
-            "`pr_reviewer.enable_command_model_overrides` in trusted global configuration."
-        )
+        if selector_tokens:
+            raise ReviewModelSelectionError(
+                "Per-command model overrides are disabled. Ask an operator to enable "
+                "`pr_reviewer.enable_command_model_overrides` in trusted global configuration."
+            )
+        # `+` tokens that are not selector-shaped are ordinary arguments.
+        return (), list(args)
 
     aliases = _get_aliases(settings)
-    if not aliases:
+    if selector_tokens and not aliases:
         raise ReviewModelSelectionError(
             "No command model aliases are configured. Ask an operator to set "
             "`pr_reviewer.command_model_aliases` in trusted global configuration."
@@ -107,6 +132,12 @@ def parse_review_model_selections(
     valid_efforts = [effort.value for effort in reversed(list(ReasoningEffort))]
     for arg in args:
         if "+" not in arg:
+            remaining_args.append(arg)
+            continue
+        alias, _effort = _split_selector(arg)
+        if not _is_selector_shaped(arg) and alias not in aliases:
+            # Not selector-shaped and not a near-miss on a configured alias
+            # (e.g. `opus+extreme`): an ordinary argument such as `C++`.
             remaining_args.append(arg)
             continue
         if arg.count("+") != 1:

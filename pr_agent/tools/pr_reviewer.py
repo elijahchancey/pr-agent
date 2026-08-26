@@ -179,6 +179,9 @@ class PRReviewer:
             if get_settings().config.publish_output and not get_settings().config.get('is_auto_command', False):
                 progress_response = self.git_provider.publish_comment("Preparing review...", is_temporary=True)
 
+            # Pass model_selections only when selectors were given: existing callers and
+            # test doubles stub retry_with_fallback_models without that keyword, and
+            # existing tests construct the reviewer via __new__ (hence the getattr).
             model_selections = getattr(self, "model_selections", ())
             if model_selections:
                 await retry_with_fallback_models(

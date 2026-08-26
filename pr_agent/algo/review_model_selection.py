@@ -84,7 +84,7 @@ def _split_selector(arg: str) -> tuple[str, str]:
 
 
 def _is_selector_shaped(arg: str) -> bool:
-    """True only for ``alias+effort`` tokens whose effort is a known value.
+    """Return True only for ``alias+effort`` tokens whose effort is a known value.
 
     Ordinary arguments that merely contain ``+`` (``C++``, ``a+b``, leftover
     ``--foo+bar`` flags) are not selectors and keep their historical meaning.
@@ -120,12 +120,20 @@ def parse_review_model_selections(
         # `+` tokens that are not selector-shaped are ordinary arguments.
         return (), list(args)
 
-    aliases = _get_aliases(settings)
-    if selector_tokens and not aliases:
-        raise ReviewModelSelectionError(
-            "No command model aliases are configured. Ask an operator to set "
-            "`pr_reviewer.command_model_aliases` in trusted global configuration."
-        )
+    if selector_tokens:
+        aliases = _get_aliases(settings)
+        if not aliases:
+            raise ReviewModelSelectionError(
+                "No command model aliases are configured. Ask an operator to set "
+                "`pr_reviewer.command_model_aliases` in trusted global configuration."
+            )
+    else:
+        try:
+            aliases = _get_aliases(settings)
+        except ReviewModelSelectionError:
+            # A malformed alias map must not fail a review whose arguments contain
+            # no selector; the config error surfaces when a selector is used.
+            return (), list(args)
 
     selections = []
     remaining_args = []

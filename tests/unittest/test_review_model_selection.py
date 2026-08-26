@@ -83,6 +83,17 @@ def test_plus_tokens_that_are_not_selectors_keep_historical_meaning(settings):
     assert remaining_args == args
 
 
+def test_malformed_alias_configuration_does_not_fail_reviews_without_selectors():
+    settings = _Settings(aliases={"BAD ALIAS!": "anthropic/claude-opus-5"})
+
+    selections, remaining_args = parse_review_model_selections(["C++", "a+b"], settings)
+
+    assert selections == ()
+    assert remaining_args == ["C++", "a+b"]
+    with pytest.raises(ReviewModelSelectionError, match="invalid"):
+        parse_review_model_selections(["opus+high"], settings)
+
+
 def test_disabled_feature_ignores_effort_typos_instead_of_failing_the_review():
     selections, remaining_args = parse_review_model_selections(
         ["opus+extreme"], _Settings(enabled=False)

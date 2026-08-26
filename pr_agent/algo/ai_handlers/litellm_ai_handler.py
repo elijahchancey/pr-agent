@@ -20,6 +20,8 @@ from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_helpers import (
     _get_azure_ad_token, _handle_streaming_response,
     _process_litellm_extra_body, _response_field)
+from pr_agent.algo.review_model_selection import \
+    get_active_review_model_selection
 from pr_agent.algo.run_details import _as_decimal_cost, record_ai_call
 from pr_agent.algo.utils import ReasoningEffort, get_version
 from pr_agent.config_loader import get_settings
@@ -630,6 +632,8 @@ class LiteLLMAIHandler(BaseAiHandler):
         # Validate config-derived kwargs before the try/except below, so a malformed value raises a
         # ValueError config error instead of being wrapped as openai.APIError and retried.
         cache_control_injection_points = self._resolve_cache_control_injection_points()
+        command_selection = get_active_review_model_selection()
+        command_effort = command_selection.reasoning_effort if command_selection else None
         _bedrock_imds = self._aws_imds_mode and any(
             provider in model for provider in ("bedrock/", "bedrock_mantle/")
         )
@@ -688,7 +692,7 @@ class LiteLLMAIHandler(BaseAiHandler):
                     model_base = model_base.removeprefix('openai/').removeprefix('azure/')
                 if model_base.startswith('gpt-5'):
                     # Use configured reasoning_effort or default to MEDIUM
-                    config_effort = get_settings().config.reasoning_effort
+                    config_effort = command_effort or get_settings().config.reasoning_effort
                     try:
                         ReasoningEffort(config_effort)
                         effort = config_effort
@@ -755,7 +759,7 @@ class LiteLLMAIHandler(BaseAiHandler):
                 # configured reasoning_effort is not silently dropped for models the
                 # user references with a provider prefix.
                 if any(model == m or model.endswith("/" + m) for m in self.support_reasoning_models):
-                    config_effort = get_settings().config.reasoning_effort
+                    config_effort = command_effort or get_settings().config.reasoning_effort
                     try:
                         ReasoningEffort(config_effort)
                         reasoning_effort = config_effort
@@ -770,8 +774,32 @@ class LiteLLMAIHandler(BaseAiHandler):
                     get_logger().info(f"Adding reasoning_effort with value {reasoning_effort} to model {model}.")
                     kwargs["reasoning_effort"] = reasoning_effort
 
+                # Explicit /review selectors are operator-allowlisted and must carry
+                # their effort through models outside the built-in detection lists
+                # (including newly released provider models).
+                if command_effort is not None and "reasoning_effort" not in kwargs:
+                    kwargs["reasoning_effort"] = command_effort
+                    # Models outside litellm's capability map (the newly released
+                    # models this branch exists for) otherwise fail client-side with
+                    # UnsupportedParamsError, since drop_params defaults to false.
+                    kwargs["allowed_openai_params"] = ["reasoning_effort"]
+                    get_logger().info(
+                        f"Adding command reasoning_effort with value {command_effort} to model {model}."
+                    )
+
+                # litellm maps reasoning_effort to Anthropic extended thinking
+                # (except "none", which disables it), and the API rejects any
+                # pinned temperature while thinking is enabled — only the default
+                # of 1 is allowed. Command efforts bypass
+                # _configure_claude_extended_thinking, so reconcile here the same
+                # way it does for config-driven thinking.
+                if (command_effort is not None and command_effort != ReasoningEffort.NONE.value
+                        and ("claude" in model or model in self.claude_extended_thinking_models)):
+                    kwargs.pop("temperature", None)
+
                 # https://docs.anthropic.com/en/docs/build-with-claude/extended-thinking
-                if (model in self.claude_extended_thinking_models) and get_settings().config.get("enable_claude_extended_thinking", False):
+                if (command_effort is None and model in self.claude_extended_thinking_models and
+                        get_settings().config.get("enable_claude_extended_thinking", False)):
                     kwargs = self._configure_claude_extended_thinking(model, kwargs)
 
                 # Optional output token limit; 0 = unset. Without max_tokens some
@@ -903,7 +931,11 @@ class LiteLLMAIHandler(BaseAiHandler):
                         provider["allow_fallbacks"] = _as_bool(openrouter_settings.get("allow_fallbacks", True))
 
                     reasoning = {}
-                    reasoning_effort = str(openrouter_settings.get("reasoning_effort", "") or "").strip().lower()
+                    reasoning_effort = ""
+                    if command_effort is None:
+                        reasoning_effort = str(
+                            openrouter_settings.get("reasoning_effort", "") or ""
+                        ).strip().lower()
                     if reasoning_effort == "none":
                         reasoning["enabled"] = False
                     elif reasoning_effort in ("low", "medium", "high"):

@@ -97,6 +97,11 @@ branch_issue_regex = ""
 
 
 [pr_reviewer] # /review #
+# Operator-controlled, global-only allowlist for ephemeral `/review alias+effort`
+# selectors. Local repository settings and PR comment configuration cannot change
+# these values.
+enable_command_model_overrides=false
+command_model_aliases={}
 # enable/disable features
 require_score_review=false
 require_tests_review=true

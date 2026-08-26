@@ -2,11 +2,13 @@ import asyncio
 
 import pytest
 
+import pr_agent.algo.pr_processing as pr_processing
 from pr_agent.algo.pr_processing import retry_with_fallback_models
 from pr_agent.algo.run_details import get_run_details, init_run_details
 from pr_agent.algo.utils import ModelType
 from pr_agent.config_loader import get_settings
-from tests.unittest._settings_helpers import SENTINEL, restore_settings, snapshot_settings
+from tests.unittest._settings_helpers import (SENTINEL, restore_settings,
+                                              snapshot_settings)
 
 _TRACKED_KEYS = (
     "config.model",
@@ -24,6 +26,17 @@ def _snapshot_settings():
 
 def _restore_settings(snapshot):
     restore_settings(snapshot)
+
+
+def test_empty_model_chain_raises_explicit_error(monkeypatch):
+    monkeypatch.setattr(pr_processing, "_get_all_models", lambda _model_type: [])
+    monkeypatch.setattr(pr_processing, "_get_all_deployments", lambda _models: [])
+
+    async def fake_f(_model):
+        raise AssertionError("an empty model chain must not call the provider")
+
+    with pytest.raises(RuntimeError, match="No models available"):
+        asyncio.run(retry_with_fallback_models(fake_f))
 
 
 def test_primary_model_success_invoked_once_and_returns_value():

@@ -5,8 +5,11 @@ from functools import partial
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
 from pr_agent.algo.cli_args import CliArgs
+from pr_agent.algo.review_model_selection import (
+    ReviewModelSelectionError, parse_review_model_selections)
 from pr_agent.algo.utils import update_settings_from_args
 from pr_agent.config_loader import get_settings
+from pr_agent.git_providers import get_git_provider_with_context
 from pr_agent.git_providers.utils import apply_repo_settings
 from pr_agent.log import get_logger
 from pr_agent.tools.pr_add_docs import PRAddDocs
@@ -44,6 +47,19 @@ command2class = {
     # fix is reviewed (see issue #2445). Re-enable by restoring `"help_docs": PRHelpDocs`
     # and its import once the hardening PR is merged.
 }
+
+
+def _publish_review_model_selection_error(pr_url: str, error: ReviewModelSelectionError) -> None:
+    """Publish a command error without entering the review/model execution path."""
+    message = f"**Invalid `/review` model selector**\n\n{error}"
+    try:
+        get_git_provider_with_context(pr_url).publish_comment(message)
+    except Exception as publish_error:
+        get_logger().warning(
+            f"Failed to publish /review model selector error: {publish_error}",
+            artifact={"error": error},
+        )
+
 
 commands = list(command2class.keys())
 
@@ -210,6 +226,23 @@ class PRAgent:
         if action not in command2class:
             get_logger().warning(f"Unknown command: {action}")
             return False
+
+        model_selections = ()
+        if action == "review":
+            try:
+                model_selections, args = parse_review_model_selections(args, get_settings())
+            except ReviewModelSelectionError as error:
+                get_logger().warning(f"Invalid /review model selector: {error}")
+                _publish_review_model_selection_error(pr_url, error)
+                if notify:
+                    try:
+                        notify()
+                    except Exception as notify_error:
+                        get_logger().warning(
+                            f"Failed to acknowledge invalid /review model selector: {notify_error}"
+                        )
+                return False
+
         with get_logger().contextualize(command=action, pr_url=pr_url):
             get_logger().info("PR-Agent request handler started", analytics=True)
             if action == "answer":
@@ -222,7 +255,10 @@ class PRAgent:
                 if notify:
                     notify()
 
-                await command2class[action](pr_url, ai_handler=self.ai_handler, args=args).run()
+                # Keep the historical constructor call unless selectors were given,
+                # so tool classes that predate model_selections stay compatible.
+                review_kwargs = {"model_selections": model_selections} if model_selections else {}
+                await command2class[action](pr_url, ai_handler=self.ai_handler, args=args, **review_kwargs).run()
             else:
                 return False
             return True

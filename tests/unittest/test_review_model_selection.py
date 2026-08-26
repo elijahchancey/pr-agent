@@ -105,6 +105,20 @@ def test_two_selectors_preserve_order_and_other_review_arguments():
     assert remaining_args == ["-i"]
 
 
+def test_four_distinct_selectors_are_allowed():
+    selections, remaining_args = parse_review_model_selections(
+        ["opus+minimal", "opus+low", "opus+high", "opus+xhigh"], _Settings()
+    )
+
+    assert [selection.reasoning_effort for selection in selections] == [
+        "minimal",
+        "low",
+        "high",
+        "xhigh",
+    ]
+    assert remaining_args == []
+
+
 @pytest.mark.parametrize(
     ("args", "settings", "message"),
     [
@@ -115,6 +129,12 @@ def test_two_selectors_preserve_order_and_other_review_arguments():
         (["opus+"], _Settings(), "Malformed model selector"),
         (["opus+extreme"], _Settings(), "Unsupported reasoning effort"),
         (["anthropic/claude-opus-5+high"], _Settings(), "Raw model identifier"),
+        (["opus+high", "opus+high"], _Settings(), "Duplicate model selector"),
+        (
+            ["opus+none", "opus+minimal", "opus+low", "opus+medium", "opus+high"],
+            _Settings(),
+            "Too many model selectors",
+        ),
     ],
 )
 def test_invalid_selectors_raise_actionable_errors(args, settings, message):
@@ -307,6 +327,12 @@ async def test_valid_selector_keeps_incremental_and_config_arguments_working(mon
         ("/review opus++high", True, "Malformed model selector"),
         ("/review opus+extreme", True, "Unsupported reasoning effort"),
         ("/review anthropic/claude-opus-5+high", True, "Raw model identifier"),
+        ("/review opus+high opus+high", True, "Duplicate model selector"),
+        (
+            "/review opus+none opus+minimal opus+low opus+medium opus+high",
+            True,
+            "Too many model selectors",
+        ),
     ],
 )
 async def test_invalid_selector_comments_do_not_construct_a_reviewer(monkeypatch, command, enabled, message):

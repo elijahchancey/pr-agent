@@ -58,7 +58,8 @@ command_model_aliases = { opus = "anthropic/claude-opus-5", fable = "anthropic/c
 The reviewed repository's `.pr_agent.toml` and command-line configuration in PR comments cannot enable this feature or
 change its aliases. Callers must use a configured alias; raw LiteLLM/provider model identifiers and unknown aliases are
 rejected to prevent unexpected cost escalation. Supported efforts are `none`, `minimal`, `low`, `medium`, `high`,
-`xhigh`, and `max`.
+`xhigh`, and `max`. A command can include at most four selectors, and exact duplicate selectors are rejected so a
+caller cannot amplify provider retries during an outage.
 
 ### Automatic triggering
 

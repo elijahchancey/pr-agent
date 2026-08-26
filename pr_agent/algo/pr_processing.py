@@ -377,6 +377,7 @@ async def retry_with_fallback_models(
                 reasoning_effort=selection.reasoning_effort if selection else None,
             )
             return result
+    raise RuntimeError("No models available for fallback execution")
 
 
 def _get_all_models(model_type: ModelType = ModelType.REGULAR) -> List[str]:

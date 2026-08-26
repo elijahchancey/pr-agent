@@ -1,6 +1,3 @@
-from pr_agent.algo.review_model_selection import \
-    get_active_review_model_selection
-
 _LANGCHAIN_INSTALLED = False
 
 try:
@@ -18,6 +15,8 @@ from tenacity import (retry, retry_if_exception_type,
                       retry_if_not_exception_type, stop_after_attempt)
 
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
+from pr_agent.algo.review_model_selection import \
+    get_active_review_model_selection
 from pr_agent.algo.run_details import record_ai_call
 from pr_agent.config_loader import get_settings
 from pr_agent.log import get_logger

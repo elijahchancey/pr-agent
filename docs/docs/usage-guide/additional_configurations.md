@@ -41,7 +41,10 @@ On providers that support GitHub-Flavored Markdown this appends a collapsible se
 - AI calls: 1
 ```
 
-`Model` shows the model that produced the answer, marked `(fallback)` when the primary model failed and a fallback took over. For a `/review alias+effort` invocation, `Reasoning effort` shows the effort paired with that successful model, including the fallback selector's own effort. The `Tokens` line appears only when the model provider reports usage. `AI calls` counts the successful LLM invocations made during the run. The flag is disabled by default.
+`Model` shows the model that produced the answer, marked `(fallback)` when the primary model failed and a fallback took
+over. For a `/review alias+effort` invocation, `Reasoning effort` shows the effort paired with that successful model,
+including the fallback selector's own effort. The `Tokens` line appears only when the model provider reports usage.
+`AI calls` counts the successful LLM invocations made during the run. The flag is disabled by default.
 
 Notes:
 

@@ -11,6 +11,9 @@ from dataclasses import dataclass
 from pr_agent.algo.utils import ReasoningEffort
 
 _ALIAS_RE = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
+# Each selector adds a provider attempt on the failure path, so keep caller-controlled
+# chains small even when every model identity is operator-allowlisted.
+MAX_MODEL_SELECTIONS = 4
 _active_review_model_selection: ContextVar["ReviewModelSelection | None"] = ContextVar(
     "pr_agent_active_review_model_selection", default=None
 )
@@ -132,8 +135,17 @@ def parse_review_model_selections(
             raise ReviewModelSelectionError(
                 f"Unsupported reasoning effort `{raw_effort}`. Choose one of: {', '.join(valid_efforts)}."
             ) from e
-        selections.append(
-            ReviewModelSelection(alias=alias, model=aliases[alias], reasoning_effort=effort)
+        selection = ReviewModelSelection(
+            alias=alias, model=aliases[alias], reasoning_effort=effort
         )
+        if selection in selections:
+            raise ReviewModelSelectionError(
+                f"Duplicate model selector `{arg}`. List each `alias+effort` at most once."
+            )
+        if len(selections) >= MAX_MODEL_SELECTIONS:
+            raise ReviewModelSelectionError(
+                f"Too many model selectors (limit {MAX_MODEL_SELECTIONS}). Shorten the fallback chain."
+            )
+        selections.append(selection)
 
     return tuple(selections), remaining_args

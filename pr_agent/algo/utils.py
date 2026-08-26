@@ -1498,6 +1498,8 @@ def show_run_details(gfm_supported: bool) -> str:
 
     title = "⚙️ Agent run details"
     lines = [f"- Model: {details.model_used}{' (fallback)' if details.fallback_used else ''}"]
+    if details.reasoning_effort:
+        lines.append(f"- Reasoning effort: {details.reasoning_effort}")
     if details.has_token_usage:
         # A counter still at zero after a successful call means the provider never
         # reported that component, so drop it instead of claiming it was zero.

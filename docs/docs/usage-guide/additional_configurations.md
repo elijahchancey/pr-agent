@@ -35,12 +35,13 @@ On providers that support GitHub-Flavored Markdown this appends a collapsible se
 ```
 ⚙️ Agent run details
 - Model: gpt-5.6-terra (fallback)
+- Reasoning effort: high
 - Tokens: 12,340 in / 1,205 out / 13,545 total
 - Time cost: 8.2s
 - AI calls: 1
 ```
 
-`Model` shows the model that produced the answer, marked `(fallback)` when the primary model failed and a fallback took over. The `Tokens` line appears only when the model provider reports usage. `AI calls` counts the successful LLM invocations made during the run. The flag is disabled by default.
+`Model` shows the model that produced the answer, marked `(fallback)` when the primary model failed and a fallback took over. For a `/review alias+effort` invocation, `Reasoning effort` shows the effort paired with that successful model, including the fallback selector's own effort. The `Tokens` line appears only when the model provider reports usage. `AI calls` counts the successful LLM invocations made during the run. The flag is disabled by default.
 
 Notes:
 

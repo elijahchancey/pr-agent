@@ -37,6 +37,16 @@ def test_marks_fallback_model():
     assert "Model: openai/gpt-5.4 (fallback)" in output
 
 
+def test_renders_effort_paired_with_the_successful_fallback():
+    init_run_details()
+    record_model_used("anthropic/claude-opus-5", is_fallback=True, reasoning_effort="high")
+
+    output = show_run_details(gfm_supported=True)
+
+    assert "Model: anthropic/claude-opus-5 (fallback)" in output
+    assert "Reasoning effort: high" in output
+
+
 def test_omits_token_components_the_provider_did_not_report():
     """A provider that reports only a total must not render "0 in / 0 out"."""
     init_run_details()

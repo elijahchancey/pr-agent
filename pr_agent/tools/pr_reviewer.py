@@ -9,35 +9,30 @@ from jinja2 import Environment, StrictUndefined
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
 from pr_agent.algo.inline_comment_dedup import (
-    InlineCommentStore,
-    can_verify_inline_comment_publication,
-    get_inline_comment_store,
-    key_issue_body_with_markers,
-    key_issue_fingerprint,
-    key_issue_location_fingerprint,
-)
-from pr_agent.algo.pr_processing import add_ai_metadata_to_diff_files, get_pr_diff, retry_with_fallback_models
+    InlineCommentStore, can_verify_inline_comment_publication,
+    get_inline_comment_store, key_issue_body_with_markers,
+    key_issue_fingerprint, key_issue_location_fingerprint)
+from pr_agent.algo.pr_processing import (add_ai_metadata_to_diff_files,
+                                         get_pr_diff,
+                                         retry_with_fallback_models)
 from pr_agent.algo.repo_context import build_repo_context
+from pr_agent.algo.review_model_selection import ReviewModelSelection
 from pr_agent.algo.run_details import get_run_details, init_run_details
 from pr_agent.algo.skills_loader import get_skills_context
 from pr_agent.algo.token_handler import TokenHandler
-from pr_agent.algo.utils import (
-    ModelType,
-    PRReviewHeader,
-    PRReviewIdentity,
-    add_pr_review_identity,
-    convert_to_markdown_v2,
-    github_action_output,
-    load_yaml,
-    show_relevant_configurations,
-    show_run_details,
-)
+from pr_agent.algo.utils import (ModelType, PRReviewHeader, PRReviewIdentity,
+                                 add_pr_review_identity,
+                                 convert_to_markdown_v2, github_action_output,
+                                 load_yaml, show_relevant_configurations,
+                                 show_run_details)
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers import get_git_provider_with_context
-from pr_agent.git_providers.git_provider import IncrementalPR, get_main_pr_language
+from pr_agent.git_providers.git_provider import (IncrementalPR,
+                                                 get_main_pr_language)
 from pr_agent.log import get_logger
 from pr_agent.servers.help import HelpMessage
-from pr_agent.tools.ticket_pr_compliance_check import extract_and_cache_pr_tickets
+from pr_agent.tools.ticket_pr_compliance_check import \
+    extract_and_cache_pr_tickets
 
 MAX_REVIEW_COVERAGE_FILES = 50
 _SUGGESTION_FENCE_RE = re.compile(r"```[ \t]*suggestion\b", re.IGNORECASE)
@@ -49,7 +44,8 @@ class PRReviewer:
     """
 
     def __init__(self, pr_url: str, is_answer: bool = False, is_auto: bool = False, args: list = None,
-                 ai_handler: partial[BaseAiHandler,] = LiteLLMAIHandler):
+                 ai_handler: partial[BaseAiHandler,] = LiteLLMAIHandler,
+                 model_selections: tuple[ReviewModelSelection, ...] = ()):
         """
         Initialize the PRReviewer object with the necessary attributes and objects to review a pull request.
 
@@ -59,9 +55,11 @@ class PRReviewer:
             is_auto (bool, optional): Indicates whether the review is being done in automatic mode. Defaults to False.
             ai_handler (BaseAiHandler): The AI handler to be used for the review. Defaults to None.
             args (list, optional): List of arguments passed to the PRReviewer class. Defaults to None.
+            model_selections: Ordered, request-scoped model and effort selections for this review.
         """
         self.git_provider = get_git_provider_with_context(pr_url)
         self.args = args
+        self.model_selections = model_selections
         self.incremental = self.parse_incremental(args)  # -i command
         if self.incremental and self.incremental.is_incremental:
             self.git_provider.get_incremental_commits(self.incremental)
@@ -181,7 +179,15 @@ class PRReviewer:
             if get_settings().config.publish_output and not get_settings().config.get('is_auto_command', False):
                 progress_response = self.git_provider.publish_comment("Preparing review...", is_temporary=True)
 
-            await retry_with_fallback_models(self._prepare_prediction, model_type=ModelType.REGULAR)
+            model_selections = getattr(self, "model_selections", ())
+            if model_selections:
+                await retry_with_fallback_models(
+                    self._prepare_prediction,
+                    model_type=ModelType.REGULAR,
+                    model_selections=model_selections,
+                )
+            else:
+                await retry_with_fallback_models(self._prepare_prediction, model_type=ModelType.REGULAR)
             if not self.prediction:
                 return None
 

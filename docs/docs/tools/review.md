@@ -30,6 +30,36 @@ If you want to edit [configurations](#configuration-options), add the relevant o
 /review --pr_reviewer.some_config1=... --pr_reviewer.some_config2=...
 ```
 
+### Per-command model and effort selection
+
+Operators can optionally let callers select an allowlisted model and reasoning effort for one review:
+
+```
+/review opus+xhigh
+/review terra+low
+```
+
+Multiple selectors form an ordered primary/fallback chain. For example, `/review fable+high opus+high` first tries the
+model mapped by `fable` at high effort. If that attempt fails under PR-Agent's normal retry/fallback behavior, it tries
+the model mapped by `opus`, also at high effort. The explicit chain replaces the configured primary and fallback models
+for that invocation only; it does not change global or repository defaults, and later commands use the normal configured
+chain again.
+
+This feature is disabled by default because model choice can materially affect cost. An operator must enable it and map
+short aliases to model identifiers in trusted global configuration, such as environment/host configuration or the
+organization-level `pr-agent-settings` repository:
+
+```toml
+[pr_reviewer]
+enable_command_model_overrides = true
+command_model_aliases = { opus = "anthropic/claude-opus-5", fable = "anthropic/claude-fable-5", terra = "gpt-5.6-terra" }
+```
+
+The reviewed repository's `.pr_agent.toml` and command-line configuration in PR comments cannot enable this feature or
+change its aliases. Callers must use a configured alias; raw LiteLLM/provider model identifiers and unknown aliases are
+rejected to prevent unexpected cost escalation. Supported efforts are `none`, `minimal`, `low`, `medium`, `high`,
+`xhigh`, and `max`.
+
 ### Automatic triggering
 
 To run the `review` automatically when a PR is opened, define in a [configuration file](../usage-guide/configuration_options.md#local-configuration-file):

@@ -31,6 +31,14 @@ _REPO_OVERRIDABLE_KEYS_BY_HOST_SECTION = {
     "skills": frozenset({"enabled", "max_skills_tokens"}),
 }
 
+# These values grant PR commenters access to operator-approved model spend. They
+# may be loaded from host config, environment variables, external operator config,
+# or an organization-level ``pr-agent-settings`` repository, but never from the
+# reviewed repository's own configuration.
+_LOCAL_REPO_PROTECTED_KEYS_BY_SECTION = {
+    "pr_reviewer": frozenset({"enable_command_model_overrides", "command_model_aliases"}),
+}
+
 _MAX_EXTRA_CONFIG_BYTES = 1 * 1024 * 1024  # 1 MB cap for a remote .toml
 _FETCH_TIMEOUT_SECONDS = 10
 # Bare Windows drive-letter paths (e.g. "C:\\shared.toml", "D:/cfg.toml").
@@ -301,7 +309,7 @@ def apply_repo_settings(pr_url):
                     with os.fdopen(fd, "wb") as settings_file_handle:
                         settings_file_handle.write(settings_content)
                     try:
-                        _apply_repo_settings_file(repo_settings_file)
+                        _apply_repo_settings_file(repo_settings_file, category=category)
                     except Exception as e:
                         get_logger().warning(f"Failed to apply repo {category} settings, error: {str(e)}")
                         config_errors.append({'error': str(e), 'settings': settings_content, 'category': category})
@@ -322,7 +330,7 @@ def apply_repo_settings(pr_url):
         set_claude_model()
 
 
-def _apply_repo_settings_file(repo_settings_file):
+def _apply_repo_settings_file(repo_settings_file, category="local"):
     """Load a single repo settings file and merge its allowed keys into the global settings.
 
     Enforces the per-repo host-key restrictions and logs only section names (values may contain
@@ -361,6 +369,16 @@ def _apply_repo_settings_file(repo_settings_file):
                     f"settings; only {sorted(allowed_keys)} may be set per-repo for this section"
                 )
             contents = {k: v for k, v in contents.items() if k.lower() in allowed_keys}
+            if not contents:
+                continue
+        if category != "global":
+            protected_keys = _LOCAL_REPO_PROTECTED_KEYS_BY_SECTION.get(section.lower(), frozenset())
+            rejected = [key for key in contents if key.lower() in protected_keys]
+            if rejected:
+                get_logger().warning(
+                    f"Ignoring global-only key(s) {rejected} in section [{section}] from local repo settings"
+                )
+                contents = {key: value for key, value in contents.items() if key.lower() not in protected_keys}
             if not contents:
                 continue
         section_dict = copy.deepcopy(get_settings().as_dict().get(section.upper(), {}))

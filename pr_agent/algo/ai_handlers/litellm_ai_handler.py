@@ -782,7 +782,12 @@ class LiteLLMAIHandler(BaseAiHandler):
                     # Models outside litellm's capability map (the newly released
                     # models this branch exists for) otherwise fail client-side with
                     # UnsupportedParamsError, since drop_params defaults to false.
-                    kwargs["allowed_openai_params"] = ["reasoning_effort"]
+                    # Claude is the exception: LiteLLM translates reasoning_effort
+                    # into Anthropic's native thinking/output_config fields. Marking
+                    # it as an allowed OpenAI passthrough parameter skips that
+                    # translation and Anthropic rejects the raw field.
+                    if not ("claude" in model or model in self.claude_extended_thinking_models):
+                        kwargs["allowed_openai_params"] = ["reasoning_effort"]
                     get_logger().info(
                         f"Adding command reasoning_effort with value {command_effort} to model {model}."
                     )

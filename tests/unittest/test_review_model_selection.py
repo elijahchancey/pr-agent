@@ -267,9 +267,10 @@ def test_litellm_applies_command_effort_to_an_allowlisted_model_outside_builtin_
     assert (response, finish_reason) == ("response", "stop")
     assert captured["model"] == "anthropic/claude-opus-5"
     assert captured["reasoning_effort"] == "xhigh"
-    # Without this, litellm rejects the effort client-side for models missing
-    # from its capability map (drop_params defaults to false).
-    assert captured["allowed_openai_params"] == ["reasoning_effort"]
+    # LiteLLM must translate this into Anthropic's native thinking and
+    # output_config fields; forcing an OpenAI passthrough sends the raw
+    # reasoning_effort field to Anthropic, which rejects it.
+    assert "allowed_openai_params" not in captured
     # Anthropic rejects a pinned temperature while extended thinking is enabled.
     assert "temperature" not in captured
 

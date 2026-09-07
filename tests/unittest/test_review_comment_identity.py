@@ -3,17 +3,19 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from pr_agent.algo.utils import (PRReviewIdentity, add_pr_review_identity,
-                                 comment_matches_identity,
-                                 convert_to_markdown_v2,
-                                 format_pr_review_header,
-                                 get_pr_review_comment_identifiers)
+from pr_agent.algo.utils import (
+    PRReviewIdentity,
+    add_pr_review_identity,
+    comment_matches_identity,
+    convert_to_markdown_v2,
+    format_pr_review_header,
+    get_pr_review_comment_identifiers,
+)
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.azuredevops_provider import AzureDevopsProvider
 from pr_agent.git_providers.gitea_provider import GiteaProvider
 from pr_agent.git_providers.github_provider import GithubProvider
-from tests.unittest._settings_helpers import (restore_settings,
-                                              snapshot_settings)
+from tests.unittest._settings_helpers import restore_settings, snapshot_settings
 
 
 def _review_data():
@@ -39,7 +41,10 @@ def test_custom_review_heading_changes_presentation_only():
     assert "<!-- pr-agent:review" not in incremental
 
 
-@pytest.mark.parametrize("invalid_heading", [None, "", "  ", "first\nsecond", 42])
+@pytest.mark.parametrize(
+    "invalid_heading",
+    [None, "", "  ", "first\nsecond", "first\u2028second", 42],
+)
 def test_invalid_review_heading_falls_back_to_default(invalid_heading):
     snapshot = snapshot_settings(["pr_reviewer.review_heading"])
     try:
@@ -193,16 +198,23 @@ def test_azure_comment_path_forwards_review_identity():
     }
 
 
-def test_gitea_keeps_identity_inactive_until_comment_payloads_are_normalized():
+def test_gitea_keeps_identity_inactive_but_preserves_wrapper_arguments():
     provider = GiteaProvider.__new__(GiteaProvider)
-    provider.publish_persistent_comment_full = MagicMock()
+    published = object()
+    provider.publish_persistent_comment_full = MagicMock(return_value=published)
     review = "## Team Review 🔍\n\nbody"
+    legacy_header = "## PR Reviewer Guide 🔍"
 
-    provider.publish_persistent_comment(
+    result = provider.publish_persistent_comment(
         review,
         initial_header="## Team Review 🔍",
         identity_marker=PRReviewIdentity.REGULAR.value,
-        legacy_initial_header="## PR Reviewer Guide 🔍",
+        legacy_initial_header=legacy_header,
     )
 
-    assert provider.publish_persistent_comment_full.call_args.kwargs == {}
+    assert provider.supports_review_comment_identity() is False
+    assert result is published
+    assert provider.publish_persistent_comment_full.call_args.kwargs == {
+        "identity_marker": PRReviewIdentity.REGULAR.value,
+        "legacy_initial_header": legacy_header,
+    }

@@ -1,34 +1,45 @@
 import difflib
-import hashlib
 import re
 import urllib.parse
 from datetime import datetime, timezone
 from types import SimpleNamespace
-from typing import Any, Optional, Tuple, Union
-from urllib.parse import parse_qs, urlparse
+from typing import Optional, Tuple
+from urllib.parse import urlparse
 
 import gitlab
-import requests
-from gitlab import (GitlabAuthenticationError, GitlabCreateError,
-                    GitlabGetError, GitlabUpdateError)
+from gitlab import GitlabAuthenticationError, GitlabCreateError, GitlabGetError, GitlabUpdateError
 
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 
 from ..algo.file_filter import filter_ignored
 from ..algo.git_patch_processing import decode_if_bytes
-from ..algo.inline_comment_dedup import (body_fingerprint, body_with_markers,
-                                         code_fingerprint,
-                                         get_inline_comment_store,
-                                         is_agent_inline_comment,
-                                         marker_fingerprints)
+from ..algo.inline_comment_dedup import (
+    body_fingerprint,
+    body_with_markers,
+    code_fingerprint,
+    get_inline_comment_store,
+    is_agent_inline_comment,
+    marker_fingerprints,
+)
 from ..algo.language_handler import is_valid_file
-from ..algo.utils import (clip_tokens, comment_matches_any_identity,
-                          find_line_number_of_relevant_line_in_file,
-                          get_pr_review_comment_identifiers, load_large_diff)
-from ..config_loader import get_settings
+from ..algo.utils import (
+    PRCodeSuggestionsHeader,
+    PRCodeSuggestionsIdentity,
+    clip_tokens,
+    comment_matches_any_identity,
+    find_line_number_of_relevant_line_in_file,
+    get_pr_review_comment_identifiers,
+    load_large_diff,
+)
+from ..config_loader import get_settings, get_verbosity_level
 from ..log import get_logger
-from .git_provider import (MAX_FILES_ALLOWED_FULL, GitProvider, IncrementalPR,
-                           get_cached_global_settings)
+from .git_provider import (
+    MAX_FILES_ALLOWED_FULL,
+    GitProvider,
+    IncrementalPR,
+    get_cached_global_settings,
+    redact_credentials,
+)
 
 
 class DiffNotFoundError(Exception):
@@ -473,12 +484,15 @@ class GitLabProvider(GitProvider):
 
     # Match the most recent prior note for each incremental kind against any accepted identity,
     # then use its timestamp as the timeline anchor.
+    _SUGGESTIONS_STABLE_ANCHORS = (
+        PRCodeSuggestionsIdentity.SUMMARY.value,
+        PRCodeSuggestionsIdentity.NO_SUGGESTIONS.value,
+        "**Suggestion:**",  # commitable-suggestions inline mode
+    )
+    _SUGGESTIONS_LEGACY_ANCHORS = (PRCodeSuggestionsHeader.SUMMARY.value,)
     _INCREMENTAL_ANCHOR_PREFIXES = {
         "review": get_pr_review_comment_identifiers(full=True, incremental=True),
-        "suggestions": (
-            "## PR Code Suggestions ✨",           # summary-table mode
-            "**Suggestion:**",                     # commitable-suggestions inline mode
-        ),
+        "suggestions": _SUGGESTIONS_STABLE_ANCHORS + _SUGGESTIONS_LEGACY_ANCHORS,
     }
 
     def get_incremental_commits(self, incremental: Optional[IncrementalPR] = None, kind: str = "review"):
@@ -509,7 +523,11 @@ class GitLabProvider(GitProvider):
 
         kind = getattr(self, '_incremental_kind', 'review')
         prefixes = self._INCREMENTAL_ANCHOR_PREFIXES.get(kind, ())
-        self.previous_review = self._find_anchor_note(prefixes) if prefixes else None
+        self.previous_review = (
+            self._find_anchor_note(prefixes, prefer_latest_activity=kind == "suggestions")
+            if prefixes
+            else None
+        )
         if not self.previous_review:
             get_logger().info(
                 f"No previous {kind} comment found, will fall back to a full run"
@@ -639,7 +657,7 @@ class GitLabProvider(GitProvider):
         identifiers = get_pr_review_comment_identifiers(full=full, incremental=incremental)
         return self._find_anchor_note(identifiers)
 
-    def _find_anchor_note(self, identities):
+    def _find_anchor_note(self, identities, *, prefer_latest_activity: bool = False):
         """Return the most recent MR note whose body matches any supplied identity.
 
         Used by incremental flows (`/review -i`, `/improve -i`) to find the timestamp
@@ -647,12 +665,12 @@ class GitLabProvider(GitProvider):
         with `.created_at` parsed to a naive UTC datetime (possibly `None` when the
         GitLab payload had an unexpected shape), or `None` if no match.
 
-        We rely on GitLab returning notes in `created_at DESC` order (the API default)
-        and take the first match — re-sorting locally with a `datetime.min` fallback
-        for unparseable timestamps would silently demote the newest match in favour
-        of an older parseable one, leading to commits being re-reviewed. If the chosen
-        anchor's timestamp doesn't parse, `_get_incremental_commits` falls back to a
-        full run via the existing `last_seen_commit is None` branch.
+        By default, rely on GitLab returning notes in `created_at DESC` order (the API
+        default) and take the first match. Suggestions can instead compare `anchor_time`
+        across every matching stable or legacy identity so an older persistent note that
+        was edited more recently wins. If the newest-created match has an unparseable
+        timestamp, retain it so `_get_incremental_commits` safely falls back to a full run
+        instead of silently demoting it in favour of an older parseable note.
 
         Notes authored by other users are skipped when the authenticated (bot) user is
         known: a human comment that merely starts with `**Suggestion:**` must not shift
@@ -671,6 +689,7 @@ class GitLabProvider(GitProvider):
                 return None
         mr_web_url = getattr(self.mr, 'web_url', None)
         own_user_id = self._get_own_user_id()
+        selected_note = None
         for note in self._incremental_notes_cache:
             body = getattr(note, 'body', None)
             if not isinstance(body, str):
@@ -686,8 +705,16 @@ class GitLabProvider(GitProvider):
                         f"user (author {author_id}, bot {own_user_id})"
                     )
                     continue
-            return _GitLabIncrementalNote(note, mr_web_url=mr_web_url)
-        return None
+            candidate = _GitLabIncrementalNote(note, mr_web_url=mr_web_url)
+            if not prefer_latest_activity:
+                return candidate
+            if selected_note is None:
+                selected_note = candidate
+                if selected_note.anchor_time is None:
+                    return selected_note
+            elif candidate.anchor_time is not None and candidate.anchor_time > selected_note.anchor_time:
+                selected_note = candidate
+        return selected_note
 
     def _get_own_user_id(self) -> Optional[int]:
         """ID of the authenticated user (the one posting pr-agent notes), or None when
@@ -812,7 +839,7 @@ class GitLabProvider(GitProvider):
                 new_file_content_str = self.get_pr_file_content(diff['new_path'], head_sha_for_content)
             else:
                 if counter_valid == MAX_FILES_ALLOWED_FULL:
-                    get_logger().info(f"Too many files in PR, will avoid loading full content for rest of files")
+                    get_logger().info("Too many files in PR, will avoid loading full content for rest of files")
                 original_file_content_str = ''
                 new_file_content_str = ''
 
@@ -863,7 +890,7 @@ class GitLabProvider(GitProvider):
             self.git_files = [c.get('new_path') for c in raw_changes if c.get('new_path')]
         return self.git_files
 
-    def publish_description(self, pr_title: str, pr_body: str):
+    def publish_description(self, pr_title: str, pr_body: str) -> None:
         try:
             if pr_title is not None:
                 self.mr.title = pr_title
@@ -871,6 +898,7 @@ class GitLabProvider(GitProvider):
             self.mr.save()
         except Exception as e:
             get_logger().exception(f"Could not update merge request {self.id_mr} description: {e}")
+            raise
 
     def get_latest_commit_url(self):
         try:
@@ -887,8 +915,30 @@ class GitLabProvider(GitProvider):
     def should_publish_review_as_thread(self) -> bool:
         return bool(get_settings().get("GITLAB.PUBLISH_REVIEW_AS_THREAD", False))
 
+    def should_publish_improve_as_thread(self) -> bool:
+        return bool(get_settings().get("GITLAB.PUBLISH_IMPROVE_AS_THREAD", False))
+
     def supports_review_comment_identity(self) -> bool:
         return True
+
+    def supports_review_finding_state(self) -> bool:
+        return True
+
+    def is_comment_authored_by_pr_agent(self, comment) -> bool:
+        if isinstance(comment, dict):
+            author = comment.get("author") or comment.get("user")
+        else:
+            author = getattr(comment, "author", None) or getattr(comment, "user", None)
+        if isinstance(author, dict):
+            author_id = author.get("id")
+        else:
+            author_id = getattr(author, "id", None)
+        if author_id is None:
+            raise RuntimeError("GitLab comment author cannot be verified")
+        own_user_id = self._get_own_user_id()
+        if own_user_id is None:
+            raise RuntimeError("GitLab authenticated user cannot be verified")
+        return str(author_id) == str(own_user_id)
 
     def publish_persistent_comment(self, pr_comment: str,
                                    initial_header: str,
@@ -955,6 +1005,23 @@ class GitLabProvider(GitProvider):
                 return
         except Exception as e:
             get_logger().warning(f"Failed to reopen resolved review thread: {e}")
+
+    def resolve_comment_thread(self, comment_id) -> bool:
+        # Resolves by note id. /ask_line addresses threads by discussion id instead, so
+        # supports_thread_resolution() stays False and that path keeps skipping GitLab.
+        try:
+            for discussion in self.mr.discussions.list(get_all=True):
+                notes = discussion.attributes.get('notes', [])
+                if not any(note.get('id') == comment_id for note in notes):
+                    continue
+                if any(note.get('resolvable') and not note.get('resolved') for note in notes):
+                    discussion.resolved = True
+                    discussion.save()
+                    return True
+                return False
+        except Exception as e:
+            get_logger().warning(f"Failed to resolve comment thread: {e}")
+        return False
 
     def resolve_outdated_inline_threads(self):
         if not get_settings().get("GITLAB.RESOLVE_OUTDATED_INLINE_THREADS", False):
@@ -1125,7 +1192,7 @@ class GitLabProvider(GitProvider):
                 link = self.get_line_link(relevant_file, line_start, line_end)
                 body_fallback =f"**Suggestion:** {content} [{label}, importance: {score}]\n\n"
                 body_fallback +=f"\n\n<details><summary>[{target_file.filename} [{line_start}-{line_end}]]({link}):</summary>\n\n"
-                body_fallback += f"\n\n___\n\n`(Cannot implement directly - GitLab API allows committable suggestions strictly on MR diff lines)`"
+                body_fallback += "\n\n___\n\n`(Cannot implement directly - GitLab API allows committable suggestions strictly on MR diff lines)`"
                 body_fallback+="</details>\n\n"
                 diff_patch = difflib.unified_diff(old_code_snippet.split('\n'),
                                             new_code_snippet.split('\n'), n=999)
@@ -1206,7 +1273,13 @@ class GitLabProvider(GitProvider):
                     continue
                 range = relevant_lines_end - relevant_lines_start # no need to add 1
                 body = body.replace('```suggestion', f'```suggestion:-0+{range}')
-                lines = target_file.head_file.splitlines()
+                lines = target_file.head_file.splitlines() if target_file.head_file else []
+                if not 0 < relevant_lines_start <= len(lines):
+                    get_logger().warning(
+                        f"Skipping suggestion: line {relevant_lines_start} out of range "
+                        f"for '{relevant_file}' (head content has {len(lines)} lines)"
+                    )
+                    continue
                 relevant_line_in_file = lines[relevant_lines_start - 1]
 
                 # edit_type, found, source_line_no, target_file, target_line_no = self.find_in_file(target_file,
@@ -1360,6 +1433,9 @@ class GitLabProvider(GitProvider):
     def get_issue_comments(self):
         return self.mr.notes.list(get_all=True)[::-1]
 
+    def get_issue_comments_newest_first(self):
+        return list(reversed(self.get_issue_comments()))
+
     def get_repo_settings(self):
         settings_files = []
         global_settings = self._get_global_repo_settings()
@@ -1423,12 +1499,10 @@ class GitLabProvider(GitProvider):
     def get_workspace_name(self):
         return self.id_project.split('/')[0]
 
-    def add_eyes_reaction(self, issue_comment_id: int, disable_eyes: bool = False) -> Optional[int]:
-        if disable_eyes:
-            return None
+    def add_reaction(self, issue_comment_id: int, reaction: str) -> Optional[int]:
         try:
             if not self.id_mr:
-                get_logger().warning("Cannot add eyes reaction: merge request ID is not set.")
+                get_logger().warning("Cannot add a reaction: merge request ID is not set.")
                 return None
 
             mr = self.gl.projects.get(self.id_project).mergerequests.get(self.id_mr)
@@ -1439,11 +1513,11 @@ class GitLabProvider(GitProvider):
                 return None
 
             award_emoji = comment.awardemojis.create({
-                'name': 'eyes'
+                'name': reaction
             })
             return award_emoji.id
         except Exception as e:
-            get_logger().warning(f"Failed to add eyes reaction, error: {e}")
+            get_logger().warning(f"Failed to add the {reaction} reaction, error: {e}")
             return None
 
     def remove_reaction(self, issue_comment_id: int, reaction_id: str) -> bool:
@@ -1599,7 +1673,7 @@ class GitLabProvider(GitProvider):
     def get_repo_labels(self):
         return self.gl.projects.get(self.id_project).labels.list()
 
-    def get_commit_messages(self):
+    def get_commit_messages(self) -> str:
         """
         Retrieves the commit messages of a pull request.
 
@@ -1634,6 +1708,9 @@ class GitLabProvider(GitProvider):
 
     def get_line_link(self, relevant_file: str, relevant_line_start: int, relevant_line_end: int = None) -> str:
         project_web_url = self._get_project_web_url()
+        relevant_line_start, relevant_line_end = self._normalize_line_range(
+            relevant_line_start, relevant_line_end
+        )
         if relevant_line_start == -1:
             link = f"{project_web_url}/-/blob/{self.mr.source_branch}/{relevant_file}?ref_type=heads"
         elif relevant_line_end:
@@ -1668,20 +1745,20 @@ class GitLabProvider(GitProvider):
                 # link = f"{self.pr.web_url}/diffs#{sha_file}_{absolute_position}_{absolute_position}"
                 return link
         except Exception as e:
-            if get_settings().config.verbosity_level >= 2:
+            if get_verbosity_level() >= 2:
                 get_logger().info(f"Failed adding line link, error: {e}")
 
         return ""
     #Clone related
     def _prepare_clone_url_with_token(self, repo_url_to_clone: str) -> str | None:
         if "gitlab." not in repo_url_to_clone:
-            get_logger().error(f"Repo URL: {repo_url_to_clone} is not a valid gitlab URL.")
+            get_logger().error(f"Repo URL: {redact_credentials(repo_url_to_clone)} is not a valid gitlab URL.")
             return None
         (scheme, base_url) = repo_url_to_clone.split("gitlab.")
         access_token = getattr(self.gl, 'oauth_token', None) or getattr(self.gl, 'private_token', None)
         if not all([scheme, access_token, base_url]):
-            get_logger().error(f"Either no access token found, or repo URL: {repo_url_to_clone} "
-                               f"is missing prefix: {scheme} and/or base URL: {base_url}.")
+            get_logger().error(f"Either no access token found, or repo URL: {redact_credentials(repo_url_to_clone)} "
+                               f"is missing prefix: {redact_credentials(scheme)} and/or base URL: {base_url}.")
             return None
 
         #Note that the ""official"" method found here:

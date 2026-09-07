@@ -54,7 +54,7 @@ class FakeGitProvider:
         self.comments.append(body)
 
 
-SNAPSHOT_SECTIONS = ("CONFIG", "PR_REVIEWER", "CUSTOM_SECTION_FOR_TEST")
+SNAPSHOT_SECTIONS = ("CONFIG", "PR_REVIEWER", "PROMPT_FRAGMENTS", "CUSTOM_SECTION_FOR_TEST")
 
 
 def _snapshot_settings_sections(settings):
@@ -159,23 +159,56 @@ def test_valid_repo_settings_merge_overrides_key_and_preserves_siblings(monkeypa
     assert pr_reviewer.get("require_tests_review") == sibling_before
 
 
+def test_repo_settings_cannot_enable_publish_error_details(monkeypatch, settings_snapshot):
+    provider = FakeGitProvider(
+        repo_settings_bytes=b"[pr_reviewer]\npublish_error_details = true\nnum_max_findings = 11\n"
+    )
+    _install_provider(monkeypatch, provider)
+
+    get_settings().set("config.use_repo_settings_file", True)
+    settings = get_settings()
+    publish_error_details_before = _section(settings, "pr_reviewer").get("publish_error_details")
+
+    apply_repo_settings("https://example.com/owner/repo/pull/1")
+
+    pr_reviewer = _section(settings, "pr_reviewer")
+    assert pr_reviewer.get("publish_error_details") == publish_error_details_before
+    assert pr_reviewer.get("num_max_findings") == 11
+
+
+def test_repo_settings_cannot_override_prompt_fragments(monkeypatch, settings_snapshot):
+    provider = FakeGitProvider(
+        repo_settings_bytes=b'[prompt_fragments]\ndiff_hunk_format = "UNTRUSTED-FRAGMENT"\n'
+    )
+    captured = _install_provider(monkeypatch, provider)
+
+    get_settings().set("config.use_repo_settings_file", True)
+    settings = get_settings()
+    fragment_before = _section(settings, "prompt_fragments").get("diff_hunk_format")
+
+    apply_repo_settings("https://example.com/owner/repo/pull/1")
+
+    assert captured["errors"] is None
+    assert _section(settings, "prompt_fragments").get("diff_hunk_format") == fragment_before
+
+
 def test_local_repo_settings_cannot_enable_or_define_command_model_overrides(monkeypatch, settings_snapshot):
     provider = FakeGitProvider(
         repo_settings_bytes=(
             b"[pr_reviewer]\n"
-            b"enable_command_model_overrides = true\n"
+            b"enable_command_model_aliases = true\n"
             b'command_model_aliases = { expensive = "provider/expensive-model" }\n'
         )
     )
     _install_provider(monkeypatch, provider)
     settings = get_settings()
     settings.set("config.use_repo_settings_file", True)
-    enabled_before = settings.pr_reviewer.enable_command_model_overrides
+    enabled_before = settings.pr_reviewer.enable_command_model_aliases
     aliases_before = dict(settings.pr_reviewer.command_model_aliases)
 
     apply_repo_settings("https://example.com/owner/repo/pull/1")
 
-    assert settings.pr_reviewer.enable_command_model_overrides == enabled_before
+    assert settings.pr_reviewer.enable_command_model_aliases == enabled_before
     assert dict(settings.pr_reviewer.command_model_aliases) == aliases_before
 
 
@@ -185,13 +218,13 @@ def test_global_alias_allowlist_wins_over_local_repo_attempt(monkeypatch, settin
             (
                 "global",
                 b"[pr_reviewer]\n"
-                b"enable_command_model_overrides = true\n"
+                b"enable_command_model_aliases = true\n"
                 b'command_model_aliases = { opus = "anthropic/claude-opus-5" }\n',
             ),
             (
                 "local",
                 b"[pr_reviewer]\n"
-                b"enable_command_model_overrides = false\n"
+                b"enable_command_model_aliases = false\n"
                 b'command_model_aliases = { cheap = "attacker/model" }\n',
             ),
         ]
@@ -200,14 +233,14 @@ def test_global_alias_allowlist_wins_over_local_repo_attempt(monkeypatch, settin
     settings = get_settings()
     settings.set("config.use_repo_settings_file", True)
     pr_reviewer = copy.deepcopy(_section(settings, "pr_reviewer"))
-    pr_reviewer["enable_command_model_overrides"] = False
+    pr_reviewer["enable_command_model_aliases"] = False
     pr_reviewer["command_model_aliases"] = {}
     settings.unset("PR_REVIEWER", force=True)
     settings.set("PR_REVIEWER", pr_reviewer, merge=False)
 
     apply_repo_settings("https://example.com/owner/repo/pull/1")
 
-    assert settings.pr_reviewer.enable_command_model_overrides is True
+    assert settings.pr_reviewer.enable_command_model_aliases is True
     assert dict(settings.pr_reviewer.command_model_aliases) == {
         "opus": "anthropic/claude-opus-5"
     }

@@ -3,14 +3,12 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from pr_agent.algo.run_details import (init_run_details, record_ai_call,
-                                       record_model_used)
+from pr_agent.algo.run_details import init_run_details, record_ai_call, record_model_used
 from pr_agent.config_loader import get_settings
 from pr_agent.tools.pr_code_suggestions import PRCodeSuggestions
 from pr_agent.tools.pr_description import PRDescription
 from pr_agent.tools.pr_reviewer import PRReviewer
-from tests.unittest._settings_helpers import (restore_settings,
-                                              snapshot_settings)
+from tests.unittest._settings_helpers import restore_settings, snapshot_settings
 
 _TRACKED_KEYS_REVIEW = (
     "config.output_run_details",
@@ -231,6 +229,7 @@ async def test_pr_code_suggestions_appends_run_details_when_no_suggestions(monke
         suggestions.progress_response = None
         suggestions.git_provider = MagicMock()
         suggestions.git_provider.get_files.return_value = ["changed.py"]
+        suggestions.git_provider.supports_code_suggestions_artifact.return_value = False
         suggestions.git_provider.is_supported.side_effect = lambda cap: cap == "gfm_markdown" and gfm_supported
 
         async def _fake_retry_empty(*_args, **_kwargs):

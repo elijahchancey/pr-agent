@@ -1,6 +1,6 @@
 ## Overview
 
-The `review` tool scans the PR code changes, and generates feedback about the PR, aiming to aid the reviewing process.
+Generate a PR review with feedback on possible issues, security concerns, tests and review effort.
 <br>
 The tool can be triggered automatically every time a new PR is [opened](../usage-guide/automations_and_usage.md#github-app-automatic-tools-when-a-new-pr-is-opened), or can be invoked manually by commenting on any PR:
 
@@ -32,38 +32,43 @@ If you want to edit [configurations](#configuration-options), add the relevant o
 
 ### Per-command model and effort selection
 
-Operators can optionally let callers select an allowlisted model and reasoning effort for one review:
+Operators can optionally let callers select a configured model alias and reasoning effort for one review:
 
 ```
-/review opus+xhigh
-/review terra+low
+/review fable+high
 ```
 
-Multiple selectors form an ordered primary/fallback chain. For example, `/review fable+high opus+high` first tries the
-model mapped by `fable` at high effort. If that attempt fails under PR-Agent's normal retry/fallback behavior, it tries
-the model mapped by `opus`, also at high effort. The explicit chain replaces the configured primary and fallback models
-for that invocation only; it does not change global or repository defaults, and later commands use the normal configured
-chain again.
+The selector sets the existing `config.model` and `config.reasoning_effort` values for that invocation and takes
+precedence over automatic `model_routing`. The normal configured fallback behavior is unchanged, repository defaults
+are not modified, and later commands use their normal configuration. A non-`none` effort also enables the existing
+adaptive-thinking path when the selected alias resolves to a supported Claude adaptive-thinking model.
 
-This feature is disabled by default because model choice can materially affect cost. An operator must enable it and map
-short aliases to model identifiers in trusted global configuration, such as environment/host configuration or the
-organization-level `pr-agent-settings` repository:
+This feature is disabled by default. PR-Agent ships the following global alias mapping. An operator must enable the
+feature in trusted global configuration, such as
+environment/host configuration or the organization-level `pr-agent-settings` repository, and may replace the mapping
+there if needed:
 
 ```toml
 [pr_reviewer]
-enable_command_model_overrides = true
-command_model_aliases = { opus = "anthropic/claude-opus-5", fable = "anthropic/claude-fable-5", terra = "gpt-5.6-terra" }
+enable_command_model_aliases = true
+command_model_aliases.fable = "anthropic/claude-fable-5"
+command_model_aliases.opus = "anthropic/claude-opus-5"
+command_model_aliases.sonnet = "anthropic/claude-sonnet-5"
+command_model_aliases.sol = "gpt-5.6-sol"
+command_model_aliases.terra = "gpt-5.6-terra"
+command_model_aliases.luna = "gpt-5.6-luna"
 ```
 
 The reviewed repository's `.pr_agent.toml` and command-line configuration in PR comments cannot enable this feature or
 change its aliases. Callers must use a configured alias; raw LiteLLM/provider model identifiers and unknown aliases are
-rejected to prevent unexpected cost escalation. Supported efforts are `none`, `minimal`, `low`, `medium`, `high`,
-`xhigh`, and `max`. A command can include at most four selectors, and exact duplicate selectors are rejected so a
-caller cannot amplify provider retries during an outage.
+rejected. Supported efforts are `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, and `max`. Each review accepts one
+selector.
 
-A token is treated as a selector only when its effort part is a known effort value, or when its alias part matches a
-configured alias while the feature is enabled. Other arguments that merely contain `+` — for example `C++` in free-text
-review instructions — keep their historical meaning and never fail the review.
+This shorthand does not change permissions for the existing `config.model` or `fallback_models` settings.
+
+When aliases are enabled, a token with a known effort is treated as a selector. When aliases are disabled, only a token
+whose alias part matches a configured alias produces the disabled-feature error. Other arguments that merely contain
+`+` — for example `cost+low` or `C++` in free-text review instructions — keep their historical meaning.
 
 ### Automatic triggering
 
@@ -86,12 +91,24 @@ extra_instructions = "..."
 
 ## Configuration options
 
+The descriptions below explain each option's behavior. See the relevant sections in
+[`configuration.toml`](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/settings/configuration.toml)
+for the authoritative default values.
+
 ???+ example "General options"
 
     <table>
       <tr>
         <td><b>persistent_comment</b></td>
-        <td>If set to true, the review comment will be persistent, meaning that every new review request will edit the previous one. Default is true.</td>
+        <td>If set to true, the review comment will be persistent, meaning that every new review request will edit the previous one.</td>
+      </tr>
+      <tr>
+        <td><b>publish_error_details</b></td>
+        <td>
+          If set to true, a failed manual review comment includes a deterministic, sanitized failure reason for known
+          provider and runtime errors. The failure formatter does not call an AI model, never publishes raw exception
+          text, and falls back to a generic internal-error message. Default is false.
+        </td>
       </tr>
       <tr>
         <td><b>review_heading</b></td>
@@ -102,12 +119,16 @@ extra_instructions = "..."
           <code>## Incremental Guideline Compliance Check 🔍</code> for an incremental review.
           On GitHub, GitLab, Azure DevOps, and Bitbucket Cloud, changing this value updates the same
           persistent review comment; it does not create a separate review channel.
-          Default is <code>PR Reviewer Guide</code>.
         </td>
       </tr>
       <tr>
+        <td><b>persistent_finding_state</b></td>
+        <td>If set to true, PR-Agent persists structured review finding state across complete review runs, so findings can be resolved and reopened. Incremental and partial reviews do not resolve absent findings. Default is true.</td>
+
+      </tr>
+      <tr>
       <td><b>final_update_message</b></td>
-      <td>When set to true, updating a persistent review comment during online commenting will automatically add a short comment with a link to the updated review in the pull request .Default is true.</td>
+      <td>When set to true, updating a persistent review comment during online commenting will automatically add a short comment with a link to the updated review in the pull request.</td>
       </tr>
       <tr>
         <td><b>extra_instructions</b></td>
@@ -115,19 +136,27 @@ extra_instructions = "..."
       </tr>
       <tr>
         <td><b>enable_help_text</b></td>
-        <td>If set to true, the tool will display a help text in the comment. Default is false.</td>
+        <td>If set to true, the tool will display a help text in the comment.</td>
       </tr>
       <tr>
         <td><b>enable_review_coverage_footer</b></td>
-        <td>If set to true, the tool will display a review coverage footer when the token budget leaves files out of the review. Default is true.</td>
+        <td>If set to true, the tool will display a review coverage footer when the token budget leaves files out of the review.</td>
+      </tr>
+      <tr>
+        <td><b>enable_large_pr_chunking</b></td>
+        <td>If set to true, and the token budget leaves files out of the review, the diff is split into chunks, each chunk is reviewed separately, and the per-chunk results are merged into one review. See <a href="#reviewing-a-pr-that-does-not-fit-in-one-call">Reviewing a PR that does not fit in one call</a>. Default is false.</td>
+      </tr>
+      <tr>
+        <td><b>max_number_of_calls</b></td>
+        <td>Maximum number of chunk review calls, used only when <code>enable_large_pr_chunking</code> is true. Default is 3.</td>
       </tr>
       <tr>
         <td><b>num_max_findings</b></td>
-        <td>Number of maximum returned findings. Default is 3.</td>
+        <td>Maximum number of returned findings.</td>
       </tr>
       <tr>
         <td><b>inline_key_issues</b></td>
-        <td>Azure DevOps only. If set to true, each key issue is published as an inline thread. A finding leaves the review summary when a matching thread exists or Azure accepts the new thread. Findings that cannot be anchored or published stay in the summary. Default is false.</td>
+        <td>Azure DevOps only. If set to true, each key issue is published as an inline thread. A finding leaves the review summary when a matching thread exists or Azure accepts the new thread. Findings that cannot be anchored or published stay in the summary.</td>
       </tr>
     </table>
 
@@ -136,36 +165,48 @@ extra_instructions = "..."
     <table>
       <tr>
         <td><b>require_score_review</b></td>
-        <td>If set to true, the tool will add a section that scores the PR. Default is false.</td>
+        <td>If set to true, the tool will add a section that scores the PR.</td>
       </tr>
       <tr>
         <td><b>require_tests_review</b></td>
-        <td>If set to true, the tool will add a section that checks if the PR contains tests. Default is true.</td>
+        <td>If set to true, the tool will add a section that checks if the PR contains tests.</td>
       </tr>
       <tr>
         <td><b>require_estimate_effort_to_review</b></td>
-        <td>If set to true, the tool will add a section that estimates the effort needed to review the PR. Default is true.</td>
+        <td>If set to true, the tool will add a section that estimates the effort needed to review the PR.</td>
       </tr>
       <tr>
         <td><b>require_estimate_contribution_time_cost</b></td>
-        <td>If set to true, the tool will add a section that estimates the time required for a senior developer to create and submit such changes. Default is false.</td>
+        <td>If set to true, the tool will add a section that estimates the time required for a senior developer to create and submit such changes.</td>
       </tr>
       <tr>
         <td><b>require_can_be_split_review</b></td>
-        <td>If set to true, the tool will add a section that checks if the PR contains several themes, and can be split into smaller PRs. Default is false.</td>
+        <td>If set to true, the tool will add a section that checks if the PR contains several themes, and can be split into smaller PRs.</td>
       </tr>
       <tr>
         <td><b>require_security_review</b></td>
-        <td>If set to true, the tool will add a section that checks if the PR contains a possible security or vulnerability issue. Default is true.</td>
+        <td>If set to true, the tool will add a section that checks if the PR contains a possible security or vulnerability issue.</td>
       </tr>
         <tr>
         <td><b>require_todo_scan</b></td>
-        <td>If set to true, the tool will add a section that lists TODO comments found in the PR code changes. Default is false.
+        <td>If set to true, the tool will add a section that lists TODO comments found in the PR code changes.
         </td>
       </tr>
       <tr>
         <td><b>require_ticket_analysis_review</b></td>
-        <td>If set to true, and the PR contains a GitHub or Jira ticket link, the tool will add a section that checks if the PR in fact fulfilled the ticket requirements. Default is true.</td>
+        <td>If set to true, and the PR contains a GitHub or Jira ticket link, the tool will add a section that checks if the PR in fact fulfilled the ticket requirements.</td>
+      </tr>
+      <tr>
+        <td><b>require_risk_assessment</b></td>
+        <td>If set to true, the tool will add a section that rates the overall risk of the PR as low, medium or high.</td>
+      </tr>
+      <tr>
+        <td><b>require_merge_recommendation</b></td>
+        <td>If set to true, the tool will add a section with a merge recommendation of safe_to_merge, merge_with_caution or changes_required.</td>
+      </tr>
+      <tr>
+        <td><b>require_priority_files</b></td>
+        <td>If set to true, the tool will add a section listing the files a human reviewer should inspect first.</td>
       </tr>
     </table>
 
@@ -176,11 +217,11 @@ extra_instructions = "..."
     <table>
       <tr>
         <td><b>enable_review_labels_security</b></td>
-        <td>If set to true, the tool will publish a 'possible security issue' label if it detects a security issue. Default is true.</td>
+        <td>If set to true, the tool will publish a 'possible security issue' label if it detects a security issue.</td>
       </tr>
       <tr>
         <td><b>enable_review_labels_effort</b></td>
-        <td>If set to true, the tool will publish a 'Review effort x/5' label (1–5 scale). Default is true.</td>
+        <td>If set to true, the tool will publish a 'Review effort x/5' label (1–5 scale).</td>
       </tr>
     </table>
 
@@ -250,3 +291,34 @@ extra_instructions = "..."
     """
     ```
     Use triple quotes to write multi-line instructions. Use bullet points to make the instructions more readable.
+
+### Reviewing a PR that does not fit in one call
+
+!!! tip ""
+
+    When a PR diff is larger than the model's token budget, the `review` tool drops whole files
+    until the diff fits, and lists the dropped files in the review coverage footer.
+
+    Setting `enable_large_pr_chunking = true` changes what happens next: the diff is split into up
+    to `max_number_of_calls` chunks, each chunk is reviewed on its own, and the answers are merged
+    into a single review that says how many chunks it was built from. Files that do not fit even
+    after chunking are still listed in the coverage footer. Every chunk is a separate model call,
+    so a chunked review costs roughly `max_number_of_calls` times a normal one.
+
+    Each chunk answers the same questions about a different part of the PR, so the answers are
+    merged field by field:
+
+    | Field | Merge rule |
+    | --- | --- |
+    | `key_issues_to_review` | Union over the chunks, dropping findings that repeat the same file, header and text |
+    | `security_concerns` | Every chunk that reported a concern is kept; "No" only when every chunk said no |
+    | `todo_sections`, `review_priority_files`, `can_be_split` | Union, de-duplicated, in chunk order (`can_be_split` keeps at most 3 sub-PRs) |
+    | `relevant_tests` | Yes if any chunk found tests |
+    | `score` | The lowest score any chunk gave |
+    | `risk_level`, `merge_recommendation` | The most conservative value any chunk gave |
+    | `estimated_effort_to_review_[1-5]` | The highest value any chunk gave |
+    | `contribution_time_cost_estimate` | The sum over the chunks, per case |
+    | `ticket_compliance_check` | One entry per ticket, with its bullet lists unioned across chunks |
+
+    The merged verdict is deliberately never less alarming than the worst chunk: a clean chunk
+    cannot raise a score, clear a security concern, or soften a risk level set by another chunk.

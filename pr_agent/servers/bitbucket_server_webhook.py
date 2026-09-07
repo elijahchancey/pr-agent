@@ -21,7 +21,7 @@ from pr_agent.agent.pr_agent import PRAgent, prepare_command
 from pr_agent.config_loader import get_settings, global_settings
 from pr_agent.git_providers.utils import apply_repo_settings
 from pr_agent.log import LoggingFormat, get_logger, setup_logger
-from pr_agent.servers.utils import verify_signature
+from pr_agent.servers.utils import get_pr_commands, verify_signature
 
 setup_logger(fmt=LoggingFormat.JSON, level=get_settings().get("CONFIG.LOG_LEVEL", "DEBUG"))
 router = APIRouter()
@@ -103,8 +103,7 @@ def should_process_pr_logic(data) -> bool:
         # Allow_only_specific_folders
         allowed_folders = get_settings().config.get("allow_only_specific_folders", [])
         if allowed_folders and pr_id and project_key and repo_slug:
-            from pr_agent.git_providers.bitbucket_server_provider import \
-                BitbucketServerProvider
+            from pr_agent.git_providers.bitbucket_server_provider import BitbucketServerProvider
             bitbucket_server_url = get_settings().get("BITBUCKET_SERVER.URL", "")
             pr_url = f"{bitbucket_server_url}/projects/{project_key}/repos/{repo_slug}/pull-requests/{pr_id}"
             provider = BitbucketServerProvider(pr_url=pr_url)
@@ -167,7 +166,7 @@ async def handle_webhook(background_tasks: BackgroundTasks, request: Request):
                 and data.get("pullRequest", {}).get("id", -1) != -1)):
         apply_repo_settings(pr_url)
         if not should_process_pr_logic(data):
-            get_logger().info(f"PR ignored due to config settings", **log_context)
+            get_logger().info("PR ignored due to config settings", **log_context)
             return JSONResponse(
                 status_code=status.HTTP_200_OK, content=jsonable_encoder({"message": "PR ignored by config"})
             )
@@ -178,7 +177,7 @@ async def handle_webhook(background_tasks: BackgroundTasks, request: Request):
             )
         get_settings().set("config.is_auto_command", True)
         if data["eventKey"] == "pr:opened":
-            commands_to_run.extend(_get_commands_list_from_settings('BITBUCKET_SERVER.PR_COMMANDS'))
+            commands_to_run.extend(get_pr_commands("bitbucket_server"))
         else: # Has to be: data["eventKey"] == "pr:from_ref_updated" or "repo:refs_changed"
             if not get_settings().get("BITBUCKET_SERVER.HANDLE_PUSH_TRIGGER"):
                 get_logger().info(f"Push trigger is disabled, skipping push commands for PR {pr_url}", **log_context)

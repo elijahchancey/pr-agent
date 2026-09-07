@@ -25,18 +25,28 @@ class TokenEncoder:
     _lock = Lock()  # Create a lock object
 
     @classmethod
-    def get_token_encoder(cls):
-        model = get_settings().config.model
+    def get_token_encoder(cls, model=None):
+        configured_model = get_settings().config.model
+        model = model or configured_model
+
+        # Use a fresh tokenizer for explicit fallback models without replacing
+        # the cached tokenizer for the configured primary model.
+        if model != configured_model:
+            return cls._create_encoder(model)
+
         if cls._encoder_instance is None or model != cls._model:  # Check without acquiring the lock for performance
             with cls._lock:  # Lock acquisition to ensure thread safety
                 if cls._encoder_instance is None or model != cls._model:
                     cls._model = model
-                    try:
-                        cls._encoder_instance = encoding_for_model(cls._model) if "gpt" in cls._model else get_encoding(
-                            "o200k_base")
-                    except:
-                        cls._encoder_instance = get_encoding("o200k_base")
+                    cls._encoder_instance = cls._create_encoder(cls._model)
         return cls._encoder_instance
+
+    @staticmethod
+    def _create_encoder(model):
+        try:
+            return encoding_for_model(model) if "gpt" in model else get_encoding("o200k_base")
+        except Exception:
+            return get_encoding("o200k_base")
 
 
 class TokenHandler:
@@ -56,7 +66,7 @@ class TokenHandler:
     CLAUDE_MODEL = "claude-3-7-sonnet-20250219"
     CLAUDE_MAX_CONTENT_SIZE = 9_000_000 # Maximum allowed content size (9MB) for Claude API
 
-    def __init__(self, pr=None, vars: dict = {}, system="", user=""):
+    def __init__(self, pr=None, vars: dict = {}, system="", user="", model=None):
         """
         Initializes the TokenHandler object.
 
@@ -65,8 +75,9 @@ class TokenHandler:
         - vars: A dictionary of variables.
         - system: The system string.
         - user: The user string.
+        - model: Optional model name whose tokenizer should be used.
         """
-        self.encoder = TokenEncoder.get_token_encoder()
+        self.encoder = TokenEncoder.get_token_encoder(model)
 
         if pr is not None:
             self.prompt_tokens = self._get_system_user_tokens(pr, self.encoder, vars, system, user)

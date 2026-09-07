@@ -31,10 +31,6 @@ class RunDetails:
     # took over. Stays None when no prediction succeeded, which the renderer reads as
     # "nothing worth showing".
     model_used: Optional[str] = None
-    # The request-scoped effort paired with ``model_used``. It stays unset for
-    # ordinary configured model chains so commands without selectors render exactly
-    # as before.
-    reasoning_effort: Optional[str] = None
     # Sticky: once a fallback has won, a later success on the primary model must not
     # clear this, or the comment would hide that a fallback ran at all.
     fallback_used: bool = False
@@ -94,13 +90,12 @@ def get_run_details() -> Optional[RunDetails]:
     return _run_details.get()
 
 
-def record_model_used(model: str, is_fallback: bool, reasoning_effort: Optional[str] = None) -> None:
+def record_model_used(model: str, is_fallback: bool) -> None:
     """Record the model that produced a successful completion."""
     details = get_run_details()
     if details is None:
         return
     details.model_used = model
-    details.reasoning_effort = reasoning_effort
     if is_fallback:
         # sticky: later primary success must not hide that a fallback ran
         details.fallback_used = True

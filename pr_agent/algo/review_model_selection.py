@@ -1,51 +1,36 @@
-"""Typed, request-scoped model selections for the ``/review`` command."""
+"""Parse an operator-configured model alias for one ``/review`` command."""
 
 from __future__ import annotations
 
 import re
-from collections.abc import Iterator, Mapping, Sequence
-from contextlib import contextmanager
-from contextvars import ContextVar
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
 from pr_agent.algo.utils import ReasoningEffort
 
 _ALIAS_RE = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
 _EFFORT_VALUES = frozenset(effort.value for effort in ReasoningEffort)
-# Each selector adds a provider attempt on the failure path, so keep caller-controlled
-# chains small even when every model identity is operator-allowlisted.
-MAX_MODEL_SELECTIONS = 4
-_active_review_model_selection: ContextVar["ReviewModelSelection | None"] = ContextVar(
-    "pr_agent_active_review_model_selection", default=None
-)
 
 
 @dataclass(frozen=True)
 class ReviewModelSelection:
-    """One operator-allowlisted model and effort pair for a review attempt."""
+    """One operator-configured model alias and reasoning effort."""
 
     alias: str
     model: str
     reasoning_effort: str
 
 
+@dataclass(frozen=True)
+class ReviewModelSelectionConfig:
+    """Trusted alias controls loaded at command dispatch."""
+
+    enabled: object
+    aliases: object
+
+
 class ReviewModelSelectionError(ValueError):
     """An actionable error caused by an invalid command model selector."""
-
-
-def get_active_review_model_selection() -> ReviewModelSelection | None:
-    """Return the selection active for the current fallback attempt, if any."""
-    return _active_review_model_selection.get()
-
-
-@contextmanager
-def use_review_model_selection(selection: ReviewModelSelection) -> Iterator[None]:
-    """Make ``selection`` visible to every AI call in one review attempt."""
-    token = _active_review_model_selection.set(selection)
-    try:
-        yield
-    finally:
-        _active_review_model_selection.reset(token)
 
 
 def _is_enabled(value) -> bool:
@@ -56,9 +41,11 @@ def _is_enabled(value) -> bool:
     return False
 
 
-def _get_aliases(settings) -> dict[str, str]:
-    raw_aliases = settings.get("PR_REVIEWER.COMMAND_MODEL_ALIASES", {}) or {}
+def _get_aliases(raw_aliases, skip_invalid: bool = False) -> dict[str, str]:
+    raw_aliases = raw_aliases or {}
     if not isinstance(raw_aliases, Mapping):
+        if skip_invalid:
+            return {}
         raise ReviewModelSelectionError(
             "The operator configuration `pr_reviewer.command_model_aliases` must be a TOML mapping."
         )
@@ -67,15 +54,29 @@ def _get_aliases(settings) -> dict[str, str]:
     for raw_alias, raw_model in raw_aliases.items():
         alias = str(raw_alias).strip().lower()
         if not _ALIAS_RE.fullmatch(alias):
+            if skip_invalid:
+                continue
             raise ReviewModelSelectionError(
                 f"The configured model alias `{raw_alias}` is invalid; use letters, numbers, `.`, `_`, or `-`."
             )
         if not isinstance(raw_model, str) or not raw_model.strip():
+            if skip_invalid:
+                continue
             raise ReviewModelSelectionError(
                 f"The configured model alias `{raw_alias}` must map to a non-empty model identifier."
             )
         aliases[alias] = raw_model.strip()
     return aliases
+
+
+def _get_configured_alias_names(raw_aliases) -> set[str]:
+    if not isinstance(raw_aliases, Mapping):
+        return set()
+    return {
+        alias
+        for raw_alias in raw_aliases
+        if (alias := str(raw_alias).strip().lower()) and _ALIAS_RE.fullmatch(alias)
+    }
 
 
 def _split_selector(arg: str) -> tuple[str, str]:
@@ -84,85 +85,74 @@ def _split_selector(arg: str) -> tuple[str, str]:
 
 
 def _is_selector_shaped(arg: str) -> bool:
-    """Return True only for ``alias+effort`` tokens whose effort is a known value.
-
-    Ordinary arguments that merely contain ``+`` (``C++``, ``a+b``, leftover
-    ``--foo+bar`` flags) are not selectors and keep their historical meaning.
-    """
     if arg.count("+") != 1:
         return False
     _, effort = _split_selector(arg)
     return effort in _EFFORT_VALUES
 
 
-def parse_review_model_selections(
-    args: Sequence[str], settings
-) -> tuple[tuple[ReviewModelSelection, ...], list[str]]:
-    """Parse ordered ``alias+effort`` tokens and return the untouched remaining args.
-
-    Tokens without ``+`` retain their historical meaning. This keeps ``/review`` and
-    existing flags byte-for-byte compatible when no selector syntax is present.
-    A token containing ``+`` is treated as a selector only when its effort part is a
-    known reasoning effort, or (with the feature enabled) when its alias part is a
-    configured alias — so prose like ``C++`` never fails a review, while a typo such
-    as ``opus+extreme`` still gets an actionable error.
-    """
+def parse_review_model_selection(
+    args: Sequence[str], config: ReviewModelSelectionConfig
+) -> tuple[ReviewModelSelection | None, list[str]]:
+    """Extract at most one ``alias+effort`` selector and preserve other arguments."""
     if not any("+" in arg for arg in args):
-        return (), list(args)
+        return None, list(args)
 
     selector_tokens = [arg for arg in args if _is_selector_shaped(arg)]
-    if not _is_enabled(settings.get("PR_REVIEWER.ENABLE_COMMAND_MODEL_OVERRIDES", False)):
-        if selector_tokens:
+    if not _is_enabled(config.enabled):
+        configured_alias_names = _get_configured_alias_names(config.aliases)
+        configured_selector_tokens = [
+            arg for arg in selector_tokens if _split_selector(arg)[0] in configured_alias_names
+        ]
+        if configured_selector_tokens:
             raise ReviewModelSelectionError(
-                "Per-command model overrides are disabled. Ask an operator to enable "
-                "`pr_reviewer.enable_command_model_overrides` in trusted global configuration."
+                "Per-command model aliases are disabled. Ask an operator to enable "
+                "`pr_reviewer.enable_command_model_aliases` in trusted global configuration."
             )
-        # `+` tokens that are not selector-shaped are ordinary arguments.
-        return (), list(args)
+        return None, list(args)
 
     if selector_tokens:
-        aliases = _get_aliases(settings)
+        aliases = _get_aliases(config.aliases)
+        configured_alias_names = set(aliases)
         if not aliases:
             raise ReviewModelSelectionError(
                 "No command model aliases are configured. Ask an operator to set "
                 "`pr_reviewer.command_model_aliases` in trusted global configuration."
             )
     else:
-        try:
-            aliases = _get_aliases(settings)
-        except ReviewModelSelectionError:
-            # A malformed alias map must not fail a review whose arguments contain
-            # no selector; the config error surfaces when a selector is used.
-            return (), list(args)
+        aliases = _get_aliases(config.aliases, skip_invalid=True)
+        configured_alias_names = _get_configured_alias_names(config.aliases)
+    configured_model_ids = {model.lower() for model in aliases.values()}
 
-    selections = []
+    selection = None
     remaining_args = []
     valid_efforts = [effort.value for effort in reversed(list(ReasoningEffort))]
     for arg in args:
         if "+" not in arg:
             remaining_args.append(arg)
             continue
-        alias, _effort = _split_selector(arg)
-        if not _is_selector_shaped(arg) and alias not in aliases:
-            # Not selector-shaped and not a near-miss on a configured alias
-            # (e.g. `opus+extreme`): an ordinary argument such as `C++`.
+
+        alias, _ = _split_selector(arg)
+        if (
+            not _is_selector_shaped(arg)
+            and alias not in configured_alias_names
+            and alias not in configured_model_ids
+        ):
             remaining_args.append(arg)
             continue
         if arg.count("+") != 1:
             raise ReviewModelSelectionError(
-                f"Malformed model selector `{arg}`. Use exactly `alias+effort`, for example `opus+high`."
+                f"Malformed model selector `{arg}`. Use exactly `alias+effort`, for example `fable+high`."
             )
         raw_alias, raw_effort = arg.split("+", 1)
         alias = raw_alias.strip().lower()
         effort = raw_effort.strip().lower()
-        if not alias or not effort:
-            raise ReviewModelSelectionError(
-                f"Malformed model selector `{arg}`. Use `alias+effort`, for example `opus+high`."
-            )
         if "/" in alias or ":" in alias:
             raise ReviewModelSelectionError(
                 f"Raw model identifier `{raw_alias}` is not allowed. Use an operator-configured alias instead."
             )
+        if alias in configured_alias_names and alias not in aliases:
+            _get_aliases(config.aliases)
         if alias not in aliases:
             available = ", ".join(sorted(aliases))
             raise ReviewModelSelectionError(
@@ -170,21 +160,14 @@ def parse_review_model_selections(
             )
         try:
             effort = ReasoningEffort(effort).value
-        except ValueError as e:
+        except ValueError as error:
             raise ReviewModelSelectionError(
                 f"Unsupported reasoning effort `{raw_effort}`. Choose one of: {', '.join(valid_efforts)}."
-            ) from e
-        selection = ReviewModelSelection(
-            alias=alias, model=aliases[alias], reasoning_effort=effort
-        )
-        if selection in selections:
+            ) from error
+        if selection is not None:
             raise ReviewModelSelectionError(
-                f"Duplicate model selector `{arg}`. List each `alias+effort` at most once."
+                "Only one model selector is supported per review. Use `/review alias+effort`."
             )
-        if len(selections) >= MAX_MODEL_SELECTIONS:
-            raise ReviewModelSelectionError(
-                f"Too many model selectors (limit {MAX_MODEL_SELECTIONS}). Shorten the fallback chain."
-            )
-        selections.append(selection)
+        selection = ReviewModelSelection(alias=alias, model=aliases[alias], reasoning_effort=effort)
 
-    return tuple(selections), remaining_args
+    return selection, remaining_args
